@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Notebook – a blog</title>
+<style>
+:root{--bg:#fcfcfd;--ink:#1a1b25;--muted:#6a6d7c;--line:#e1e2ea;--card:#fff;--brand:#4338ca}
+@media (prefers-color-scheme:dark){:root{--bg:#121319;--ink:#e9eaf2;--muted:#9a9db0;--line:#272936;--card:#191b23;--brand:#9d93ff}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
+:focus-visible{outline:3px solid var(--brand);outline-offset:2px}
+a{color:var(--brand)}
+button,input,textarea{font:inherit;color:inherit}
+input,textarea{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--card)}
+.btn{background:var(--brand);color:#fff;border:0;border-radius:8px;padding:9px 16px;font-weight:600;cursor:pointer}
+@media (prefers-color-scheme:dark){.btn{color:#14122e}}
+.btn:disabled{opacity:.5}
+.btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+.btn.sm{padding:3px 10px;font-size:.85rem}
+.wrap{max-width:720px;margin:0 auto;padding:0 18px 64px}
+header{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:18px 0;border-bottom:1px solid var(--line);margin-bottom:28px}
+header a.brand{font:700 1.4rem Georgia,serif;color:var(--ink);text-decoration:none;margin-right:auto}
+.serif{font-family:Georgia,"Times New Roman",serif}
+h1,h2{font-family:Georgia,"Times New Roman",serif;line-height:1.2;margin:0 0 12px}
+h1{font-size:2.1rem}
+.item{padding:20px 0;border-bottom:1px solid var(--line)}
+.item h2 a{color:var(--ink);text-decoration:none}.item h2 a:hover{color:var(--brand)}
+.muted{color:var(--muted);font-size:.9rem}
+.excerpt{margin:8px 0;color:var(--muted)}
+.article{font:1.15rem/1.8 Georgia,"Times New Roman",serif}
+.article p{margin:0 0 1.1em;overflow-wrap:anywhere}
+form.stack{display:grid;gap:12px}
+label{display:grid;gap:4px;font-weight:600;font-size:.9rem}
+.msg{color:#d6336c;min-height:1.3em;font-size:.9rem}
+@media (prefers-color-scheme:dark){.msg{color:#ff8fab}}
+.bar{display:flex;gap:8px;margin-bottom:8px}
+.cm{padding:14px 0;border-bottom:1px solid var(--line)}
+.cm p{margin:4px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}
+.acts{display:flex;gap:8px;margin:14px 0 8px}
+.empty{text-align:center;color:var(--muted);padding:40px 0}
+#toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:8px;opacity:0;pointer-events:none;transition:opacity .2s}
+#toast.show{opacity:1}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header><a class="brand" href="#/">Notebook</a><nav id="nav" style="display:flex;gap:8px;flex-wrap:wrap"></nav></header>
+  <main id="view" aria-live="polite"></main>
+</div>
+<div id="toast" role="status"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const date = d => new Date(d).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+const paras = t => esc(t).split(/\n{2,}/).map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('');
+const toast = t => { const e = $('#toast'); e.textContent = t; e.classList.add('show'); setTimeout(() => e.classList.remove('show'), 2200); };
+
+let token = localStorage.getItem('token'), user = null;
+
+async function api(path, method = 'GET', body) {
+  const r = await fetch('/api' + path, { method, headers: { 'Content-Type': 'application/json', ...(token && { Authorization: 'Bearer ' + token }) }, body: body && JSON.stringify(body) });
+  const data = await r.json().catch(() => ({}));
+  if (r.status === 401 && token) { token = user = null; localStorage.removeItem('token'); renderNav(); }
+  if (!r.ok) throw new Error(data.error || 'Something went wrong.');
+  return data;
+}
+
+function renderNav() {
+  $('#nav').innerHTML = user
+    ? `<a class="btn sm" href="#/new">Write a post</a><button class="btn ghost sm" id="logout">Log out (${esc(user.name)})</button>`
+    : `<a class="btn ghost sm" href="#/login">Log in</a><a class="btn sm" href="#/register">Sign up</a>`;
+  if ($('#logout')) $('#logout').onclick = () => { token = user = null; localStorage.removeItem('token'); renderNav(); location.hash = '#/'; toast('Logged out'); };
+}
+
+// ---------- router ----------
+async function route() {
+  const [, page, id] = location.hash.split('/');
+  const v = $('#view');
+  try {
+    if (!page) return await home(v);
+    if (page === 'post') return await postView(v, id);
+    if (page === 'new' || page === 'edit') return user ? await editor(v, id) : (location.hash = '#/login');
+    if (page === 'login' || page === 'register') return authView(v, page);
+    v.innerHTML = '<p class="empty">Page not found.</p>';
+  } catch (e) { v.innerHTML = `<p class="empty">${esc(e.message)}</p>`; }
+}
+window.addEventListener('hashchange', route);
+
+// ---------- home ----------
+let q = '';
+async function home(v) {
+  v.innerHTML = `<form class="bar" id="sf" role="search"><input id="q" type="search" placeholder="Search posts" aria-label="Search posts" value="${esc(q)}"><button class="btn">Search</button></form><div id="list"></div><div style="text-align:center"><button class="btn ghost hidden" id="more" hidden>Load more</button></div>`;
+  let page = 1;
+  const load = async reset => {
+    const d = await api(`/posts?page=${page}&q=${encodeURIComponent(q)}`);
+    if (reset) $('#list').innerHTML = '';
+    if (reset && !d.posts.length) $('#list').innerHTML = `<p class="empty">${q ? 'No posts match your search.' : 'No posts yet. Be the first to write one.'}</p>`;
+    $('#list').insertAdjacentHTML('beforeend', d.posts.map(p => `<article class="item"><h2><a href="#/post/${p._id}">${esc(p.title)}</a></h2>
+      <div class="muted">${esc(p.author?.name || 'Unknown')} · ${date(p.createdAt)} · ${p.commentCount} comment${p.commentCount === 1 ? '' : 's'}</div>
+      <p class="excerpt">${esc(p.excerpt)}${p.excerpt.length >= 220 ? '…' : ''}</p></article>`).join(''));
+    $('#more').hidden = !d.hasMore;
+  };
+  $('#sf').onsubmit = e => { e.preventDefault(); q = $('#q').value.trim(); page = 1; load(true); };
+  $('#more').onclick = () => { page++; load(false); };
+  await load(true);
+}
+
+// ---------- single post + comments ----------
+async function postView(v, id) {
+  const [p, comments] = await Promise.all([api('/posts/' + id), api(`/posts/${id}/comments`)]);
+  const mine = user && p.author && user.id === p.author._id;
+  v.innerHTML = `<article><h1>${esc(p.title)}</h1><div class="muted">By ${esc(p.author?.name || 'Unknown')} · ${date(p.createdAt)}${p.updatedAt !== p.createdAt ? ` · edited ${date(p.updatedAt)}` : ''}</div>
+    ${mine ? `<div class="acts"><a class="btn ghost sm" href="#/edit/${p._id}">Edit</a><button class="btn ghost sm" id="del">Delete</button></div>` : ''}
+    <div class="article" style="margin-top:20px">${paras(p.body)}</div></article>
+    <section style="margin-top:40px"><h2 style="font-size:1.4rem" id="ch">Comments (${comments.length})</h2><div id="cl"></div>
+    ${user ? `<form class="stack" id="cf" style="margin-top:16px"><label>Add a comment <textarea name="text" rows="3" maxlength="1000" required></textarea></label><div class="msg" id="cm" role="alert"></div><div><button class="btn">Post comment</button></div></form>`
+      : '<p class="muted"><a href="#/login">Log in</a> to join the conversation.</p>'}</section>`;
+  let list = comments;
+  const draw = () => {
+    $('#ch').textContent = `Comments (${list.length})`;
+    $('#cl').innerHTML = list.length ? list.map(c => `<div class="cm"><div class="muted"><strong>${esc(c.author?.name || 'Deleted user')}</strong> · ${date(c.createdAt)}
+      ${user && (user.id === c.author?._id || mine) ? ` · <button class="btn ghost sm" data-dc="${c._id}">Delete</button>` : ''}</div><p>${esc(c.text)}</p></div>`).join('')
+      : '<p class="muted">No comments yet.</p>';
+  };
+  draw();
+  $('#cl').onclick = async e => {
+    const cid = e.target.dataset.dc; if (!cid || !confirm('Delete this comment?')) return;
+    try { await api('/comments/' + cid, 'DELETE'); list = list.filter(c => c._id !== cid); draw(); } catch (err) { toast(err.message); }
+  };
+  if ($('#cf')) $('#cf').onsubmit = async e => {
+    e.preventDefault();
+    try { list.push(await api(`/posts/${id}/comments`, 'POST', { text: e.target.text.value })); e.target.reset(); $('#cm').textContent = ''; draw(); }
+    catch (err) { $('#cm').textContent = err.message; }
+  };
+  if ($('#del')) $('#del').onclick = async () => {
+    if (!confirm('Delete this post and all its comments?')) return;
+    try { await api('/posts/' + id, 'DELETE'); toast('Post deleted'); location.hash = '#/'; } catch (err) { toast(err.message); }
+  };
+}
+
+// ---------- create / edit ----------
+async function editor(v, id) {
+  const p = id ? await api('/posts/' + id) : {};
+  if (id && p.author?._id !== user.id) { v.innerHTML = '<p class="empty">You can only edit your own posts.</p>'; return; }
+  v.innerHTML = `<h1>${id ? 'Edit post' : 'New post'}</h1><form class="stack" id="pf">
+    <label>Title <input name="title" required maxlength="150" value="${esc(p.title)}"></label>
+    <label>Content <textarea name="body" rows="14" required maxlength="20000">${esc(p.body)}</textarea></label>
+    <span class="muted">Leave a blank line between paragraphs.</span>
+    <div class="msg" id="pm" role="alert"></div><div><button class="btn">${id ? 'Save changes' : 'Publish'}</button> <a class="btn ghost" href="#/${id ? 'post/' + id : ''}">Cancel</a></div></form>`;
+  $('#pf').onsubmit = async e => {
+    e.preventDefault();
+    try {
+      const body = Object.fromEntries(new FormData(e.target));
+      const saved = await (id ? api('/posts/' + id, 'PUT', body) : api('/posts', 'POST', body));
+      toast(id ? 'Changes saved' : 'Post published'); location.hash = '#/post/' + saved._id;
+    } catch (err) { $('#pm').textContent = err.message; }
+  };
+}
+
+// ---------- login / register ----------
+function authView(v, mode) {
+  const reg = mode === 'register';
+  v.innerHTML = `<div style="max-width:380px;margin:0 auto"><h1>${reg ? 'Create account' : 'Log in'}</h1><form class="stack" id="af">
+    ${reg ? '<label>Name <input name="name" required maxlength="60" autocomplete="name"></label>' : ''}
+    <label>Email <input name="email" type="email" required autocomplete="email"></label>
+    <label>Password <input name="password" type="password" required minlength="8" autocomplete="${reg ? 'new-password' : 'current-password'}"></label>
+    <div class="msg" id="am" role="alert"></div><button class="btn">${reg ? 'Sign up' : 'Log in'}</button></form>
+    <p class="muted">${reg ? 'Have an account? <a href="#/login">Log in</a>' : 'New here? <a href="#/register">Create an account</a>'}</p></div>`;
+  $('#af').onsubmit = async e => {
+    e.preventDefault();
+    try {
+      const d = await api('/auth/' + mode, 'POST', Object.fromEntries(new FormData(e.target)));
+      token = d.token; user = d.user; localStorage.setItem('token', token); renderNav(); location.hash = '#/';
+    } catch (err) { $('#am').textContent = err.message; }
+  };
+}
+
+// ---------- boot ----------
+(async () => {
+  if (token) { try { user = await api('/auth/me'); } catch {} }
+  renderNav(); route();
+})();
+</script>
+</body>
+</html>
